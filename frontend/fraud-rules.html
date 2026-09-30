@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Fraud Rules - Transaction Monitor</title>
+<link href="https://cdnjs.cloudflare.com/ajax/libs/bootstrap/5.3.3/css/bootstrap.min.css" rel="stylesheet">
+<link href="https://cdnjs.cloudflare.com/ajax/libs/bootstrap-icons/1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
+<script src="auth.js"></script>
+<style>
+  body { background: #f7f7f8; font-family: -apple-system, Segoe UI, Roboto, sans-serif; margin: 0; }
+  .app-shell { display: flex; min-height: 100vh; }
+  .sidebar { width: 240px; background: #fff; border-right: 1px solid #e5e7eb; padding: 1.5rem 1rem; flex-shrink: 0; display: flex; flex-direction: column; }
+  .sidebar h4 { font-weight: 700; margin-bottom: 2rem; }
+  .nav-link { color: #374151; border-radius: 8px; padding: 0.6rem 0.8rem; margin-bottom: 0.3rem; display: flex; align-items: center; gap: 0.6rem; font-size: 0.95rem; }
+  .nav-link:hover { background: #f3f4f6; }
+  .nav-link.active { background: #111827; color: #fff; }
+  .main-content { flex: 1; padding: 2rem; max-width: 1300px; }
+  .rule-card { background: #fff; border-radius: 10px; padding: 1.5rem; box-shadow: 0 1px 3px rgba(0,0,0,0.08); height: 100%; }
+  .rule-points { font-size: 1.4rem; font-weight: 700; color: #f97316; }
+  #status { color: #6b7280; }
+  .params-code { background: #f3f4f6; border-radius: 6px; padding: 0.5rem 0.75rem; font-size: 0.8rem; font-family: monospace; white-space: pre-wrap; word-break: break-word; }
+</style>
+</head>
+<body>
+
+<div class="app-shell">
+  <div class="sidebar">
+    <h4>Transaction<br>Monitor</h4>
+    <div id="sidebarNav"></div>
+    <a href="#" onclick="logout()" class="nav-link mt-auto"><i class="bi bi-box-arrow-right"></i> Logout</a>
+  </div>
+
+  <div class="main-content">
+    <div class="d-flex justify-content-between align-items-start mb-4">
+      <div>
+        <h2 class="fw-bold mb-1">Fraud Rules</h2>
+        <p class="text-muted mb-0" id="pageSubtitle">Create, edit, and remove fraud detection rules</p>
+      </div>
+      <button class="btn btn-dark" id="newRuleBtn" data-bs-toggle="modal" data-bs-target="#ruleModal" onclick="openCreateModal()">
+        <i class="bi bi-plus-lg"></i> New Rule
+      </button>
+    </div>
+
+    <div id="status">Loading...</div>
+
+    <div class="row g-3" id="rulesContainer" style="display:none;"></div>
+  </div>
+</div>
+
+<!-- Create/Edit Modal -->
+<div class="modal fade" id="ruleModal" tabindex="-1">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="modalTitle">New Rule</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <form id="ruleForm">
+          <input type="hidden" id="ruleId">
+          <div class="mb-2">
+            <label class="form-label small">Rule Key (unique, no spaces)</label>
+            <input type="text" class="form-control" id="ruleKey" required>
+          </div>
+          <div class="mb-2">
+            <label class="form-label small">Rule Name</label>
+            <input type="text" class="form-control" id="ruleName" required>
+          </div>
+          <div class="mb-2">
+            <label class="form-label small">Description</label>
+            <textarea class="form-control" id="ruleDescription" rows="2" required></textarea>
+          </div>
+          <div class="mb-2">
+            <label class="form-label small">Condition Type</label>
+            <select class="form-select" id="conditionType" required>
+              <option value="AMOUNT_GTE_AND_LOCATION_IN">Amount >= X AND Location in list</option>
+              <option value="AMOUNT_GTE">Amount >= X</option>
+              <option value="CHANNEL_EQ_AND_AMOUNT_LTE">Channel = X AND Amount <= Y</option>
+              <option value="CHANNEL_EQ_AND_AMOUNT_GTE">Channel = X AND Amount >= Y</option>
+              <option value="HOUR_RANGE">Transaction hour between X and Y</option>
+              <option value="MISSING_DESC_AND_AMOUNT_GTE">Missing description AND Amount >= X</option>
+            </select>
+          </div>
+          <div class="mb-2">
+            <label class="form-label small">Parameters (JSON)</label>
+            <textarea class="form-control font-monospace" id="ruleParameters" rows="3" required></textarea>
+            <div class="form-text">e.g. {"threshold_gbp": 500, "locations": ["Iran"]}</div>
+          </div>
+          <div class="mb-2">
+            <label class="form-label small">Points</label>
+            <input type="number" class="form-control" id="rulePoints" step="0.01" required>
+          </div>
+          <div class="form-check">
+            <input class="form-check-input" type="checkbox" id="ruleActive" checked>
+            <label class="form-check-label small" for="ruleActive">Active</label>
+          </div>
+        </form>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+        <button type="button" class="btn btn-dark" onclick="saveRule()">Save</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/bootstrap/5.3.3/js/bootstrap.bundle.min.js"></script>
+<script>
+  const session = requireAuth("fraud-rules.html");
+  const isAdmin = session ? session.user.role_name === "Admin" : false;
+  let ruleModal;
+
+  async function loadRules() {
+    const statusEl = document.getElementById("status");
+    const container = document.getElementById("rulesContainer");
+
+    try {
+      const res = await apiFetch(`${API_BASE}/api/rules`);
+      if (!res.ok) throw new Error(`API returned ${res.status}`);
+      const rules = await res.json();
+
+      statusEl.style.display = "none";
+      container.style.display = "flex";
+
+      container.innerHTML = rules.map(rule => `
+        <div class="col-md-6">
+          <div class="rule-card">
+            <div class="d-flex justify-content-between align-items-start mb-2">
+              <h6 class="fw-bold mb-0">${rule.rule_name}</h6>
+              <span class="badge ${rule.is_active ? 'bg-success' : 'bg-secondary'}">
+                ${rule.is_active ? 'Active' : 'Inactive'}
+              </span>
+            </div>
+            <p class="text-muted small mb-2">${rule.description}</p>
+            <div class="params-code mb-3">${JSON.stringify(rule.parameters)}</div>
+            <div class="d-flex justify-content-between align-items-center">
+              <div class="rule-points">+${rule.points} <span class="fs-6 text-muted fw-normal">pts</span></div>
+              ${isAdmin ? `
+              <div>
+                <button class="btn btn-sm btn-outline-secondary" onclick='openEditModal(${JSON.stringify(rule)})'>
+                  <i class="bi bi-pencil"></i> Edit
+                </button>
+                <button class="btn btn-sm btn-outline-danger" onclick="deleteRule(${rule.rule_id}, '${rule.rule_name.replace(/'/g, "\\'")}')">
+                  <i class="bi bi-trash"></i>
+                </button>
+              </div>` : ''}
+            </div>
+          </div>
+        </div>
+      `).join("");
+    } catch (err) {
+      statusEl.textContent = `Could not load rules: ${err.message}. Is the API running at ${API_BASE}?`;
+    }
+  }
+
+  function openCreateModal() {
+    document.getElementById("modalTitle").textContent = "New Rule";
+    document.getElementById("ruleForm").reset();
+    document.getElementById("ruleId").value = "";
+    document.getElementById("ruleKey").disabled = false;
+  }
+
+  function openEditModal(rule) {
+    document.getElementById("modalTitle").textContent = "Edit Rule";
+    document.getElementById("ruleId").value = rule.rule_id;
+    document.getElementById("ruleKey").value = rule.rule_key;
+    document.getElementById("ruleKey").disabled = true; // key shouldn't change after creation
+    document.getElementById("ruleName").value = rule.rule_name;
+    document.getElementById("ruleDescription").value = rule.description;
+    document.getElementById("conditionType").value = rule.condition_type;
+    document.getElementById("ruleParameters").value = JSON.stringify(rule.parameters);
+    document.getElementById("rulePoints").value = rule.points;
+    document.getElementById("ruleActive").checked = rule.is_active;
+    ruleModal.show();
+  }
+
+  async function saveRule() {
+    const ruleId = document.getElementById("ruleId").value;
+    let parameters;
+    try {
+      parameters = JSON.parse(document.getElementById("ruleParameters").value);
+    } catch {
+      alert("Parameters must be valid JSON.");
+      return;
+    }
+
+    const payload = {
+      rule_name: document.getElementById("ruleName").value,
+      description: document.getElementById("ruleDescription").value,
+      condition_type: document.getElementById("conditionType").value,
+      parameters,
+      points: parseFloat(document.getElementById("rulePoints").value),
+      is_active: document.getElementById("ruleActive").checked,
+    };
+
+    try {
+      let res;
+      if (ruleId) {
+        res = await apiFetch(`${API_BASE}/api/rules/${ruleId}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+      } else {
+        payload.rule_key = document.getElementById("ruleKey").value;
+        res = await apiFetch(`${API_BASE}/api/rules`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+      }
+      if (!res.ok) {
+        const err = await res.json();
+        alert(`Save failed: ${JSON.stringify(err.detail)}`);
+        return;
+      }
+      ruleModal.hide();
+      loadRules();
+    } catch (err) {
+      alert(`Save failed: ${err.message}`);
+    }
+  }
+
+  async function deleteRule(ruleId, ruleName) {
+    if (!confirm(`Delete rule "${ruleName}"? This cannot be undone.`)) return;
+    try {
+      const res = await apiFetch(`${API_BASE}/api/rules/${ruleId}`, { method: "DELETE" });
+      if (!res.ok && res.status !== 204) throw new Error(`API returned ${res.status}`);
+      loadRules();
+    } catch (err) {
+      alert(`Delete failed: ${err.message}`);
+    }
+  }
+
+  document.addEventListener("DOMContentLoaded", () => {
+    if (!session) return;
+    renderSidebar("fraud-rules.html", session.user.role_name);
+    if (!isAdmin) {
+      document.getElementById("newRuleBtn").style.display = "none";
+      document.getElementById("pageSubtitle").textContent = "View fraud detection rules currently in effect";
+    }
+    ruleModal = new bootstrap.Modal(document.getElementById("ruleModal"));
+    loadRules();
+  });
+</script>
+
+</body>
+</html>

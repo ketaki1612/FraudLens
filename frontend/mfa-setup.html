@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Set Up MFA - Transaction Monitor</title>
+<link href="https://cdnjs.cloudflare.com/ajax/libs/bootstrap/5.3.3/css/bootstrap.min.css" rel="stylesheet">
+<link href="https://cdnjs.cloudflare.com/ajax/libs/bootstrap-icons/1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+<script src="auth.js"></script>
+<style>
+  body { background: #f7f7f8; font-family: -apple-system, Segoe UI, Roboto, sans-serif; margin: 0; }
+  .app-shell { display: flex; min-height: 100vh; }
+  .sidebar { width: 240px; background: #fff; border-right: 1px solid #e5e7eb; padding: 1.5rem 1rem; flex-shrink: 0; display: flex; flex-direction: column; }
+  .sidebar h4 { font-weight: 700; margin-bottom: 2rem; }
+  .nav-link { color: #374151; border-radius: 8px; padding: 0.6rem 0.8rem; margin-bottom: 0.3rem; display: flex; align-items: center; gap: 0.6rem; font-size: 0.95rem; }
+  .nav-link:hover { background: #f3f4f6; }
+  .nav-link.active { background: #111827; color: #fff; }
+  .main-content { flex: 1; padding: 2rem; max-width: 500px; }
+  .form-card { background: #fff; border-radius: 10px; padding: 2rem; box-shadow: 0 1px 3px rgba(0,0,0,0.08); text-align: center; }
+  #qrcode { display: flex; justify-content: center; margin: 1.5rem 0; }
+  #resultMsg { display: none; }
+  code { background: #f3f4f6; padding: 0.2rem 0.4rem; border-radius: 4px; }
+</style>
+</head>
+<body>
+
+<div class="app-shell">
+  <div class="sidebar">
+    <h4>Transaction<br>Monitor</h4>
+    <div id="sidebarNav"></div>
+    <a href="#" onclick="logout()" class="nav-link mt-auto"><i class="bi bi-box-arrow-right"></i> Logout</a>
+  </div>
+
+  <div class="main-content">
+    <h2 class="fw-bold mb-1">Set Up MFA</h2>
+    <p class="text-muted mb-4">Add an extra layer of security to your account</p>
+
+    <div class="form-card">
+      <div id="step1">
+        <p>Scan this QR code with Google Authenticator, Microsoft Authenticator, or a similar app.</p>
+        <div id="qrcode"></div>
+        <p class="small text-muted">Can't scan? Enter this key manually: <br><code id="secretText"></code></p>
+
+        <div class="alert" id="resultMsg"></div>
+
+        <form id="verifyForm" class="mt-3">
+          <div class="mb-3">
+            <label class="form-label small">Enter the 6-digit code from your app</label>
+            <input type="text" class="form-control text-center" id="verifyCode" inputmode="numeric" maxlength="6" required>
+          </div>
+          <button type="submit" class="btn btn-dark w-100">Verify & Enable MFA</button>
+        </form>
+      </div>
+
+      <div id="step2" style="display:none;">
+        <i class="bi bi-shield-check text-success" style="font-size: 3rem;"></i>
+        <h5 class="fw-bold mt-3">MFA Enabled</h5>
+        <p class="text-muted">You'll be asked for a code from your app on every future login.</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+  const session = requireAuth("mfa-setup.html");
+
+  async function startSetup() {
+    try {
+      const res = await apiFetch(`${API_BASE}/api/auth/mfa/setup`, {
+        method: "POST",
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Setup failed");
+
+      document.getElementById("secretText").textContent = data.secret;
+      new QRCode(document.getElementById("qrcode"), {
+        text: data.provisioning_uri,
+        width: 200,
+        height: 200,
+      });
+    } catch (err) {
+      document.getElementById("resultMsg").className = "alert alert-danger";
+      document.getElementById("resultMsg").textContent = err.message;
+      document.getElementById("resultMsg").style.display = "block";
+    }
+  }
+
+  document.getElementById("verifyForm").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const resultMsg = document.getElementById("resultMsg");
+    const code = document.getElementById("verifyCode").value;
+
+    try {
+      const res = await apiFetch(`${API_BASE}/api/auth/mfa/verify`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ code }),
+      });
+      const data = await res.json();
+
+      if (!res.ok) {
+        resultMsg.className = "alert alert-danger";
+        resultMsg.textContent = data.detail || "Incorrect code.";
+        resultMsg.style.display = "block";
+        return;
+      }
+
+      document.getElementById("step1").style.display = "none";
+      document.getElementById("step2").style.display = "block";
+    } catch (err) {
+      resultMsg.className = "alert alert-danger";
+      resultMsg.textContent = err.message;
+      resultMsg.style.display = "block";
+    }
+  });
+
+  if (session) {
+    renderSidebar("mfa-setup.html", session.user.role_name);
+    startSetup();
+  }
+</script>
+
+</body>
+</html>

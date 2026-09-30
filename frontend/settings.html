@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Settings - Transaction Monitor</title>
+<link href="https://cdnjs.cloudflare.com/ajax/libs/bootstrap/5.3.3/css/bootstrap.min.css" rel="stylesheet">
+<link href="https://cdnjs.cloudflare.com/ajax/libs/bootstrap-icons/1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
+<script src="auth.js"></script>
+<style>
+  body { background: #f7f7f8; font-family: -apple-system, Segoe UI, Roboto, sans-serif; margin: 0; }
+  .app-shell { display: flex; min-height: 100vh; }
+  .sidebar { width: 240px; background: #fff; border-right: 1px solid #e5e7eb; padding: 1.5rem 1rem; flex-shrink: 0; display: flex; flex-direction: column; }
+  .sidebar h4 { font-weight: 700; margin-bottom: 2rem; }
+  .nav-link { color: #374151; border-radius: 8px; padding: 0.6rem 0.8rem; margin-bottom: 0.3rem; display: flex; align-items: center; gap: 0.6rem; font-size: 0.95rem; }
+  .nav-link:hover { background: #f3f4f6; }
+  .nav-link.active { background: #111827; color: #fff; }
+  .main-content { flex: 1; padding: 2rem; max-width: 1300px; }
+  .role-card { background: #fff; border-radius: 10px; padding: 1.5rem; box-shadow: 0 1px 3px rgba(0,0,0,0.08); height: 100%; }
+  .role-icon { font-size: 1.3rem; }
+  .role-admin { color: #dc2626; }
+  .role-analyst { color: #2563eb; }
+  .role-auditor { color: #16a34a; }
+  .role-card ul { list-style: none; padding-left: 0; margin-bottom: 0; }
+  .role-card ul li { padding: 0.25rem 0; font-size: 0.9rem; }
+  .role-card ul li i { color: #16a34a; margin-right: 0.5rem; }
+  .table-card { background: #fff; border-radius: 10px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); overflow: hidden; }
+  #status { color: #6b7280; }
+</style>
+</head>
+<body>
+
+<div class="app-shell">
+  <div class="sidebar">
+    <h4>Transaction<br>Monitor</h4>
+    <div id="sidebarNav"></div>
+    <a href="#" onclick="logout()" class="nav-link mt-auto"><i class="bi bi-box-arrow-right"></i> Logout</a>
+  </div>
+
+  <div class="main-content">
+    <h2 class="fw-bold mb-1">Settings</h2>
+    <p class="text-muted mb-4">Manage users and role permissions</p>
+
+    <h6 class="fw-bold text-uppercase text-muted mb-3" style="font-size: 0.8rem;">Role Permissions</h6>
+    <div class="row g-3 mb-4">
+      <div class="col-md-4">
+        <div class="role-card">
+          <div class="d-flex align-items-center gap-2 mb-3">
+            <i class="bi bi-shield-fill role-icon role-admin"></i>
+            <h6 class="fw-bold mb-0 role-admin">Admin</h6>
+            <span class="badge bg-light text-dark border ms-auto">Max 1 user</span>
+          </div>
+          <ul>
+            <li><i class="bi bi-check-lg"></i>Full access to all modules</li>
+            <li><i class="bi bi-check-lg"></i>Create, edit, delete fraud rules</li>
+            <li><i class="bi bi-check-lg"></i>View and manage Settings</li>
+            <li><i class="bi bi-check-lg"></i>View Audit Logs</li>
+            <li><i class="bi bi-check-lg"></i>View all transactions and dashboard</li>
+          </ul>
+        </div>
+      </div>
+      <div class="col-md-4">
+        <div class="role-card">
+          <div class="d-flex align-items-center gap-2 mb-3">
+            <i class="bi bi-shield-fill role-icon role-analyst"></i>
+            <h6 class="fw-bold mb-0 role-analyst">Analyst</h6>
+            <span class="badge bg-light text-dark border ms-auto">Unlimited</span>
+          </div>
+          <ul>
+            <li><i class="bi bi-check-lg"></i>View dashboard and transactions</li>
+            <li><i class="bi bi-check-lg"></i>View fraud rules (read-only)</li>
+            <li><i class="bi bi-x-lg text-danger"></i>No access to Settings</li>
+            <li><i class="bi bi-x-lg text-danger"></i>No access to Audit Logs</li>
+          </ul>
+        </div>
+      </div>
+      <div class="col-md-4">
+        <div class="role-card">
+          <div class="d-flex align-items-center gap-2 mb-3">
+            <i class="bi bi-shield-fill role-icon role-auditor"></i>
+            <h6 class="fw-bold mb-0 role-auditor">Auditor</h6>
+            <span class="badge bg-light text-dark border ms-auto">Max 2 users</span>
+          </div>
+          <ul>
+            <li><i class="bi bi-check-lg"></i>View access to all modules</li>
+            <li><i class="bi bi-check-lg"></i>View transactions and dashboard</li>
+            <li><i class="bi bi-check-lg"></i>View fraud rules and audit logs</li>
+            <li><i class="bi bi-x-lg text-danger"></i>Read-only - no edits anywhere</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+
+    <h6 class="fw-bold text-uppercase text-muted mb-3" style="font-size: 0.8rem;">User Management</h6>
+
+    <div class="row g-2 mb-3">
+      <div class="col-md-4">
+        <input type="text" id="searchBox" class="form-control" placeholder="Search by username...">
+      </div>
+      <div class="col-md-3">
+        <select id="roleFilter" class="form-select">
+          <option value="all">All Roles</option>
+          <option value="Admin">Admin</option>
+          <option value="Analyst">Analyst</option>
+          <option value="Auditor">Auditor</option>
+        </select>
+      </div>
+      <div class="col-md-3">
+        <select id="statusFilter" class="form-select">
+          <option value="all">All Status</option>
+          <option value="active">Active</option>
+          <option value="inactive">Inactive</option>
+        </select>
+      </div>
+      <div class="col-md-2">
+        <select id="sortOrder" class="form-select">
+          <option value="newest">Newest First</option>
+          <option value="oldest">Oldest First</option>
+        </select>
+      </div>
+    </div>
+
+    <div id="status">Loading...</div>
+
+    <div class="table-card" style="display:none;" id="tableWrap">
+      <table class="table table-hover mb-0">
+        <thead>
+          <tr>
+            <th class="ps-3">User</th>
+            <th>Role</th>
+            <th>Status</th>
+            <th>Created</th>
+            <th>Last Login</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody id="usersBody"></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<script>
+  const session = requireAuth("settings.html");
+  let allUsers = [];
+
+  async function loadUsers() {
+    const statusEl = document.getElementById("status");
+    try {
+      const res = await apiFetch(`${API_BASE}/api/users`);
+      if (!res.ok) throw new Error(`API returned ${res.status}`);
+      allUsers = await res.json();
+      statusEl.style.display = "none";
+      document.getElementById("tableWrap").style.display = "block";
+      render();
+    } catch (err) {
+      statusEl.textContent = `Could not load users: ${err.message}. Is the API running at ${API_BASE}?`;
+    }
+  }
+
+  function render() {
+    const search = document.getElementById("searchBox").value.toLowerCase();
+    const roleFilter = document.getElementById("roleFilter").value;
+    const statusFilter = document.getElementById("statusFilter").value;
+    const sortOrder = document.getElementById("sortOrder").value;
+
+    let rows = allUsers.filter(u => {
+      const matchesSearch = u.username.toLowerCase().includes(search);
+      const matchesRole = roleFilter === "all" || u.role_name === roleFilter;
+      const matchesStatus =
+        statusFilter === "all" ||
+        (statusFilter === "active" && u.is_active) ||
+        (statusFilter === "inactive" && !u.is_active);
+      return matchesSearch && matchesRole && matchesStatus;
+    });
+
+    rows.sort((a, b) => {
+      const diff = new Date(a.created_date_time) - new Date(b.created_date_time);
+      return sortOrder === "newest" ? -diff : diff;
+    });
+
+    const tbody = document.getElementById("usersBody");
+    if (rows.length === 0) {
+      tbody.innerHTML = `<tr><td colspan="6" class="text-center text-muted py-4">No matching users</td></tr>`;
+      return;
+    }
+
+    const roleColor = { Admin: "role-admin", Analyst: "role-analyst", Auditor: "role-auditor" };
+
+    tbody.innerHTML = rows.map(u => `
+      <tr>
+        <td class="ps-3"><i class="bi bi-person-circle me-2 text-muted"></i>${u.username}</td>
+        <td class="${roleColor[u.role_name] || ''}">${u.role_name}</td>
+        <td>
+          <span class="badge ${u.is_active ? 'bg-success' : 'bg-secondary'}">
+            ${u.is_active ? 'Active' : 'Inactive'}
+          </span>
+        </td>
+        <td>${new Date(u.created_date_time).toLocaleDateString()}</td>
+        <td>${u.last_login_at ? new Date(u.last_login_at).toLocaleString() : '—'}</td>
+        <td>
+          <button class="btn btn-sm btn-outline-secondary" onclick="resetPassword(${u.user_id}, '${u.username}')">
+            <i class="bi bi-key"></i> Reset Password
+          </button>
+        </td>
+      </tr>
+    `).join("");
+  }
+
+  async function resetPassword(userId, username) {
+    const newPassword = prompt(`Enter a new temporary password for "${username}" (min 8 characters):`);
+    if (!newPassword) return;
+    if (newPassword.length < 8) {
+      alert("Password must be at least 8 characters.");
+      return;
+    }
+
+    try {
+      const res = await apiFetch(`${API_BASE}/api/users/${userId}/reset-password`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ new_password: newPassword }),
+      });
+      if (!res.ok) {
+        const err = await res.json();
+        alert(`Reset failed: ${err.detail}`);
+        return;
+      }
+      alert(`Password reset for ${username}. Share the new password with them privately.`);
+    } catch (err) {
+      alert(`Reset failed: ${err.message}`);
+    }
+  }
+
+  ["searchBox", "roleFilter", "statusFilter", "sortOrder"].forEach(id => {
+    document.getElementById(id).addEventListener("input", render);
+  });
+
+  if (session) {
+    renderSidebar("settings.html", session.user.role_name);
+    loadUsers();
+  }
+</script>
+
+</body>
+</html>

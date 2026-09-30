@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Register User - Transaction Monitor</title>
+<link href="https://cdnjs.cloudflare.com/ajax/libs/bootstrap/5.3.3/css/bootstrap.min.css" rel="stylesheet">
+<link href="https://cdnjs.cloudflare.com/ajax/libs/bootstrap-icons/1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
+<script src="auth.js"></script>
+<style>
+  body { background: #f7f7f8; font-family: -apple-system, Segoe UI, Roboto, sans-serif; margin: 0; }
+  .app-shell { display: flex; min-height: 100vh; }
+  .sidebar { width: 240px; background: #fff; border-right: 1px solid #e5e7eb; padding: 1.5rem 1rem; flex-shrink: 0; display: flex; flex-direction: column; }
+  .sidebar h4 { font-weight: 700; margin-bottom: 2rem; }
+  .nav-link { color: #374151; border-radius: 8px; padding: 0.6rem 0.8rem; margin-bottom: 0.3rem; display: flex; align-items: center; gap: 0.6rem; font-size: 0.95rem; }
+  .nav-link:hover { background: #f3f4f6; }
+  .nav-link.active { background: #111827; color: #fff; }
+  .main-content { flex: 1; padding: 2rem; max-width: 600px; }
+  .form-card { background: #fff; border-radius: 10px; padding: 2rem; box-shadow: 0 1px 3px rgba(0,0,0,0.08); }
+  #resultMsg { display: none; }
+</style>
+</head>
+<body>
+
+<div class="app-shell">
+  <div class="sidebar">
+    <h4>Transaction<br>Monitor</h4>
+    <div id="sidebarNav"></div>
+    <a href="#" onclick="logout()" class="nav-link mt-auto"><i class="bi bi-box-arrow-right"></i> Logout</a>
+  </div>
+
+  <div class="main-content">
+    <h2 class="fw-bold mb-1">Register New User</h2>
+    <p class="text-muted mb-4">Admin only - create an Admin, Analyst, or Auditor account</p>
+
+    <div class="form-card">
+      <div class="alert" id="resultMsg"></div>
+
+      <form id="registerForm">
+        <div class="mb-3">
+          <label class="form-label small">Username</label>
+          <input type="text" class="form-control" id="username" minlength="3" required>
+        </div>
+        <div class="mb-3">
+          <label class="form-label small">Temporary Password (min 8 characters)</label>
+          <input type="password" class="form-control" id="password" minlength="8" required>
+          <div class="form-text">Share this with the user privately - they should change it on first login.</div>
+        </div>
+        <div class="mb-3">
+          <label class="form-label small">Role</label>
+          <select class="form-select" id="roleName" required>
+            <option value="Admin">Admin (max 1 active)</option>
+            <option value="Analyst">Analyst</option>
+            <option value="Auditor">Auditor (max 2 active)</option>
+          </select>
+        </div>
+        <button type="submit" class="btn btn-dark">Create User</button>
+      </form>
+    </div>
+  </div>
+</div>
+
+<script>
+  const session = requireAuth("register.html");
+
+  document.getElementById("registerForm").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const resultMsg = document.getElementById("resultMsg");
+
+    const payload = {
+      username: document.getElementById("username").value,
+      password: document.getElementById("password").value,
+      role_name: document.getElementById("roleName").value,
+    };
+
+    try {
+      const res = await apiFetch(`${API_BASE}/api/auth/register`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        resultMsg.className = "alert alert-danger";
+        resultMsg.textContent = data.detail || "Registration failed.";
+        resultMsg.style.display = "block";
+        return;
+      }
+
+      resultMsg.className = "alert alert-success";
+      resultMsg.textContent = `User "${data.username}" created successfully as ${data.role_name}.`;
+      resultMsg.style.display = "block";
+      document.getElementById("registerForm").reset();
+    } catch (err) {
+      resultMsg.className = "alert alert-danger";
+      resultMsg.textContent = `Could not reach the API: ${err.message}`;
+      resultMsg.style.display = "block";
+    }
+  });
+
+  if (session) {
+    renderSidebar("register.html", session.user.role_name);
+  }
+</script>
+
+</body>
+</html>

@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Login - Transaction Monitor</title>
+<link href="https://cdnjs.cloudflare.com/ajax/libs/bootstrap/5.3.3/css/bootstrap.min.css" rel="stylesheet">
+<style>
+  body {
+    background: #f7f7f8;
+    font-family: -apple-system, Segoe UI, Roboto, sans-serif;
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .login-card {
+    background: #fff;
+    border-radius: 12px;
+    padding: 2.5rem;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+    width: 100%;
+    max-width: 380px;
+  }
+  #errorMsg { display: none; }
+</style>
+</head>
+<body>
+
+<div class="login-card">
+  <h4 class="fw-bold mb-1">Transaction Monitor</h4>
+  <p class="text-muted mb-4" id="subtitle">Sign in to continue</p>
+
+  <div class="alert alert-danger" id="errorMsg"></div>
+
+  <!-- Step 1: username + password -->
+  <form id="loginForm">
+    <div class="mb-3">
+      <label class="form-label small">Username</label>
+      <input type="text" class="form-control" id="username" required autofocus>
+    </div>
+    <div class="mb-3">
+      <label class="form-label small">Password</label>
+      <input type="password" class="form-control" id="password" required>
+    </div>
+    <button type="submit" class="btn btn-dark w-100">Sign In</button>
+  </form>
+
+  <!-- Step 2: MFA code (hidden until needed) -->
+  <form id="mfaForm" style="display:none;">
+    <div class="mb-3">
+      <label class="form-label small">6-digit code from your authenticator app</label>
+      <input type="text" class="form-control" id="mfaCode" inputmode="numeric" maxlength="6" required autofocus>
+    </div>
+    <button type="submit" class="btn btn-dark w-100">Verify</button>
+  </form>
+</div>
+
+<script>
+  const API_BASE = "http://127.0.0.1:8000";
+  let pendingToken = null;
+
+  document.getElementById("loginForm").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const errorMsg = document.getElementById("errorMsg");
+    errorMsg.style.display = "none";
+
+    const username = document.getElementById("username").value;
+    const password = document.getElementById("password").value;
+
+    try {
+      const res = await fetch(`${API_BASE}/api/auth/login`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username, password }),
+      });
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        errorMsg.textContent = data.detail || "Login failed.";
+        errorMsg.style.display = "block";
+        return;
+      }
+
+      if (data.mfa_required) {
+        pendingToken = data.pending_token;
+        document.getElementById("loginForm").style.display = "none";
+        document.getElementById("mfaForm").style.display = "block";
+        document.getElementById("subtitle").textContent = "Enter your authenticator code";
+        return;
+      }
+
+      sessionStorage.setItem("session", JSON.stringify(data));
+      window.location.href = "index.html";
+    } catch (err) {
+      errorMsg.textContent = `Could not reach the API: ${err.message}`;
+      errorMsg.style.display = "block";
+    }
+  });
+
+  document.getElementById("mfaForm").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const errorMsg = document.getElementById("errorMsg");
+    errorMsg.style.display = "none";
+
+    const code = document.getElementById("mfaCode").value;
+
+    try {
+      const res = await fetch(`${API_BASE}/api/auth/login/mfa`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pending_token: pendingToken, code }),
+      });
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        errorMsg.textContent = data.detail || "Incorrect code.";
+        errorMsg.style.display = "block";
+        return;
+      }
+
+      sessionStorage.setItem("session", JSON.stringify(data));
+      window.location.href = "index.html";
+    } catch (err) {
+      errorMsg.textContent = `Could not reach the API: ${err.message}`;
+      errorMsg.style.display = "block";
+    }
+  });
+</script>
+
+</body>
+</html>

@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Transactions - Transaction Monitor</title>
+<link href="https://cdnjs.cloudflare.com/ajax/libs/bootstrap/5.3.3/css/bootstrap.min.css" rel="stylesheet">
+<link href="https://cdnjs.cloudflare.com/ajax/libs/bootstrap-icons/1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
+<script src="auth.js"></script>
+<style>
+  body {
+    background: #f7f7f8;
+    font-family: -apple-system, Segoe UI, Roboto, sans-serif;
+    margin: 0;
+  }
+  .app-shell { display: flex; min-height: 100vh; }
+  .sidebar { width: 240px; background: #fff; border-right: 1px solid #e5e7eb; padding: 1.5rem 1rem; flex-shrink: 0; display: flex; flex-direction: column; }
+  .sidebar h4 { font-weight: 700; margin-bottom: 2rem; }
+  .nav-link { color: #374151; border-radius: 8px; padding: 0.6rem 0.8rem; margin-bottom: 0.3rem; display: flex; align-items: center; gap: 0.6rem; font-size: 0.95rem; }
+  .nav-link:hover { background: #f3f4f6; }
+  .nav-link.active { background: #111827; color: #fff; }
+  .main-content { flex: 1; padding: 2rem; max-width: 1300px; }
+  .stat-card {
+    background: #fff;
+    border-radius: 10px;
+    padding: 1.2rem 1.5rem;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+  }
+  .stat-label { color: #6b7280; font-size: 0.85rem; }
+  .stat-value { font-size: 1.8rem; font-weight: 700; }
+  .badge-approved { background: #dcfce7; color: #166534; }
+  .badge-flagged { background: #fef3c7; color: #92400e; }
+  .badge-pending { background: #e5e7eb; color: #374151; }
+  .badge-rejected { background: #fee2e2; color: #991b1b; }
+  table th { color: #6b7280; font-weight: 600; font-size: 0.85rem; text-transform: uppercase; }
+  table td { vertical-align: middle; }
+  #status { color: #6b7280; }
+</style>
+</head>
+<body>
+
+<div class="app-shell">
+  <div class="sidebar">
+    <h4>Transaction<br>Monitor</h4>
+    <div id="sidebarNav"></div>
+    <a href="#" onclick="logout()" class="nav-link mt-auto"><i class="bi bi-box-arrow-right"></i> Logout</a>
+  </div>
+
+  <div class="main-content">
+    <h2 class="fw-bold mb-1">Transaction Logs</h2>
+  <p class="text-muted mb-4">View and filter all transaction records</p>
+
+  <!-- Stat cards -->
+  <div class="row g-3 mb-4">
+    <div class="col-md-4">
+      <div class="stat-card">
+        <div class="stat-label">Total Transactions</div>
+        <div class="stat-value" id="statTotal">—</div>
+      </div>
+    </div>
+    <div class="col-md-4">
+      <div class="stat-card">
+        <div class="stat-label">Flagged</div>
+        <div class="stat-value text-warning" id="statFlagged">—</div>
+      </div>
+    </div>
+    <div class="col-md-4">
+      <div class="stat-card">
+        <div class="stat-label">Avg Risk Score</div>
+        <div class="stat-value" id="statAvgRisk">—</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Filters -->
+  <div class="row g-2 mb-3">
+    <div class="col-md-4">
+      <input type="text" id="searchBox" class="form-control" placeholder="Search by item or merchant ID...">
+    </div>
+    <div class="col-md-3">
+      <select id="statusFilter" class="form-select">
+        <option value="all">All Status</option>
+        <option value="Approved">Approved</option>
+        <option value="Flagged">Flagged</option>
+        <option value="Pending">Pending</option>
+        <option value="Rejected">Rejected</option>
+      </select>
+    </div>
+    <div class="col-md-3">
+      <select id="channelFilter" class="form-select">
+        <option value="all">All Channels</option>
+        <option value="card_present">Card Present</option>
+        <option value="ecom">Ecom</option>
+        <option value="mobile">Mobile</option>
+        <option value="atm">ATM</option>
+      </select>
+    </div>
+    <div class="col-md-2">
+      <select id="sortOrder" class="form-select">
+        <option value="newest">Date (Newest)</option>
+        <option value="oldest">Date (Oldest)</option>
+      </select>
+    </div>
+  </div>
+
+  <div id="status">Loading...</div>
+
+  <div class="table-responsive bg-white rounded shadow-sm" style="display:none;" id="tableWrap">
+    <table class="table table-hover mb-0">
+      <thead>
+        <tr>
+          <th>ID</th>
+          <th>Status</th>
+          <th>Risk Score</th>
+          <th>Date</th>
+          <th>Merchant ID</th>
+          <th>Channel</th>
+          <th>Location</th>
+          <th class="text-end">Amount</th>
+        </tr>
+      </thead>
+      <tbody id="txnBody"></tbody>
+    </table>
+  </div>
+  </div>
+</div>
+
+<script>
+  const session = requireAuth("transactions.html");
+  let allTransactions = [];
+
+  async function loadTransactions() {
+    const statusEl = document.getElementById("status");
+    try {
+      const res = await apiFetch(`${API_BASE}/api/transactions?limit=200`);
+      if (!res.ok) throw new Error(`API returned ${res.status}`);
+      allTransactions = await res.json();
+      statusEl.style.display = "none";
+      document.getElementById("tableWrap").style.display = "block";
+      updateStats();
+      render();
+    } catch (err) {
+      statusEl.textContent = `Could not load transactions: ${err.message}. Is the API running at ${API_BASE}?`;
+    }
+  }
+
+  function updateStats() {
+    const total = allTransactions.length;
+    const flagged = allTransactions.filter(t => t.status === "Flagged").length;
+    const scored = allTransactions.filter(t => t.risk_score !== null && t.risk_score !== undefined);
+    const avgRisk = scored.length
+      ? (scored.reduce((sum, t) => sum + t.risk_score, 0) / scored.length).toFixed(1)
+      : "—";
+
+    document.getElementById("statTotal").textContent = total;
+    document.getElementById("statFlagged").textContent = flagged;
+    document.getElementById("statAvgRisk").textContent = avgRisk;
+  }
+
+  function render() {
+    const search = document.getElementById("searchBox").value.toLowerCase();
+    const statusFilter = document.getElementById("statusFilter").value;
+    const channelFilter = document.getElementById("channelFilter").value;
+    const sortOrder = document.getElementById("sortOrder").value;
+
+    let rows = allTransactions.filter(t => {
+      const matchesSearch =
+        (t.item_description ?? "").toLowerCase().includes(search) ||
+        String(t.merchant_id).includes(search);
+      const matchesStatus =
+        statusFilter === "all" || t.status === statusFilter;
+      const matchesChannel = channelFilter === "all" || t.channel === channelFilter;
+      return matchesSearch && matchesStatus && matchesChannel;
+    });
+
+    rows.sort((a, b) => {
+      const diff = new Date(a.transaction_date_time) - new Date(b.transaction_date_time);
+      return sortOrder === "newest" ? -diff : diff;
+    });
+
+    const tbody = document.getElementById("txnBody");
+    if (rows.length === 0) {
+      tbody.innerHTML = `<tr><td colspan="8" class="text-center text-muted py-4">No matching transactions</td></tr>`;
+      return;
+    }
+
+    tbody.innerHTML = rows.map(t => `
+      <tr>
+        <td>txn-${t.transaction_id}</td>
+        <td>
+          <span class="badge rounded-pill badge-${t.status.toLowerCase()}">
+            ${t.status}
+          </span>
+        </td>
+        <td><strong>${t.risk_score ?? "—"}</strong></td>
+        <td>${new Date(t.transaction_date_time).toLocaleString()}</td>
+        <td>${t.merchant_id}</td>
+        <td>${t.channel}</td>
+        <td>${t.location}</td>
+        <td class="text-end">${t.amount.toFixed(2)} ${t.currency_code}</td>
+      </tr>
+    `).join("");
+  }
+
+  ["searchBox", "statusFilter", "channelFilter", "sortOrder"].forEach(id => {
+    document.getElementById(id).addEventListener("input", render);
+  });
+
+  if (session) {
+    renderSidebar("transactions.html", session.user.role_name);
+    loadTransactions();
+  }
+</script>
+
+</body>
+</html>

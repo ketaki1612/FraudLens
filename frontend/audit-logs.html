@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Audit Logs - Transaction Monitor</title>
+<link href="https://cdnjs.cloudflare.com/ajax/libs/bootstrap/5.3.3/css/bootstrap.min.css" rel="stylesheet">
+<link href="https://cdnjs.cloudflare.com/ajax/libs/bootstrap-icons/1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
+<script src="auth.js"></script>
+<style>
+  body { background: #f7f7f8; font-family: -apple-system, Segoe UI, Roboto, sans-serif; margin: 0; }
+  .app-shell { display: flex; min-height: 100vh; }
+  .sidebar { width: 240px; background: #fff; border-right: 1px solid #e5e7eb; padding: 1.5rem 1rem; flex-shrink: 0; display: flex; flex-direction: column; }
+  .sidebar h4 { font-weight: 700; margin-bottom: 2rem; }
+  .nav-link { color: #374151; border-radius: 8px; padding: 0.6rem 0.8rem; margin-bottom: 0.3rem; display: flex; align-items: center; gap: 0.6rem; font-size: 0.95rem; }
+  .nav-link:hover { background: #f3f4f6; }
+  .nav-link.active { background: #111827; color: #fff; }
+  .main-content { flex: 1; padding: 2rem; max-width: 1300px; }
+  .table-card { background: #fff; border-radius: 10px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); overflow: hidden; }
+  .role-admin { color: #dc2626; }
+  .role-analyst { color: #2563eb; }
+  .role-auditor { color: #16a34a; }
+  #status { color: #6b7280; }
+  .page-field { font-family: monospace; font-size: 0.85rem; }
+</style>
+</head>
+<body>
+
+<div class="app-shell">
+  <div class="sidebar">
+    <h4>Transaction<br>Monitor</h4>
+    <div id="sidebarNav"></div>
+    <a href="#" onclick="logout()" class="nav-link mt-auto"><i class="bi bi-box-arrow-right"></i> Logout</a>
+  </div>
+
+  <div class="main-content">
+    <div class="d-flex justify-content-between align-items-start mb-4">
+      <div>
+        <h2 class="fw-bold mb-1">Audit Logs</h2>
+        <p class="text-muted mb-0">Track every action taken across the platform</p>
+      </div>
+      <button class="btn btn-dark" onclick="downloadCSV()">
+        <i class="bi bi-download"></i> Download CSV
+      </button>
+    </div>
+
+    <div class="row g-2 mb-3">
+      <div class="col-md-4">
+        <input type="text" id="searchBox" class="form-control" placeholder="Search by user or action...">
+      </div>
+      <div class="col-md-3">
+        <select id="roleFilter" class="form-select">
+          <option value="all">All Roles</option>
+          <option value="Admin">Admin</option>
+          <option value="Analyst">Analyst</option>
+          <option value="Auditor">Auditor</option>
+        </select>
+      </div>
+      <div class="col-md-3">
+        <select id="sortOrder" class="form-select">
+          <option value="newest">Newest First</option>
+          <option value="oldest">Oldest First</option>
+        </select>
+      </div>
+    </div>
+
+    <div id="status">Loading...</div>
+
+    <div class="table-card" style="display:none;" id="tableWrap">
+      <table class="table table-hover mb-0">
+        <thead>
+          <tr>
+            <th class="ps-3">User</th>
+            <th>Role</th>
+            <th>Action</th>
+            <th>IP Address</th>
+            <th>Login Time</th>
+            <th>Modified At</th>
+          </tr>
+        </thead>
+        <tbody id="logsBody"></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<script>
+  const session = requireAuth("audit-logs.html");
+  let allLogs = [];
+  let currentRows = []; // the currently filtered/sorted rows shown in the table
+
+  async function loadLogs() {
+    const statusEl = document.getElementById("status");
+    try {
+      const res = await apiFetch(`${API_BASE}/api/audit-logs?limit=200`);
+      if (!res.ok) throw new Error(`API returned ${res.status}`);
+      allLogs = await res.json();
+      statusEl.style.display = "none";
+      document.getElementById("tableWrap").style.display = "block";
+      render();
+    } catch (err) {
+      statusEl.textContent = `Could not load audit logs: ${err.message}. Is the API running at ${API_BASE}?`;
+    }
+  }
+
+  function render() {
+    const search = document.getElementById("searchBox").value.toLowerCase();
+    const roleFilter = document.getElementById("roleFilter").value;
+    const sortOrder = document.getElementById("sortOrder").value;
+
+    let rows = allLogs.filter(log => {
+      const matchesSearch =
+        log.user_name.toLowerCase().includes(search) ||
+        log.modified_page_or_field.toLowerCase().includes(search);
+      const matchesRole = roleFilter === "all" || log.user_role === roleFilter;
+      return matchesSearch && matchesRole;
+    });
+
+    rows.sort((a, b) => {
+      const diff = new Date(a.modified_at) - new Date(b.modified_at);
+      return sortOrder === "newest" ? -diff : diff;
+    });
+
+    currentRows = rows; // keep for CSV export, respecting active filters/sort
+
+    const tbody = document.getElementById("logsBody");
+    if (rows.length === 0) {
+      tbody.innerHTML = `<tr><td colspan="6" class="text-center text-muted py-4">No matching audit entries</td></tr>`;
+      return;
+    }
+
+    const roleColor = { Admin: "role-admin", Analyst: "role-analyst", Auditor: "role-auditor" };
+
+    tbody.innerHTML = rows.map(log => `
+      <tr>
+        <td class="ps-3"><i class="bi bi-person-circle me-2 text-muted"></i>${log.user_name}</td>
+        <td class="${roleColor[log.user_role] || ''}">${log.user_role}</td>
+        <td class="page-field">${log.modified_page_or_field}</td>
+        <td>${log.ip_address ?? '—'}</td>
+        <td>${new Date(log.user_login_date_time).toLocaleString()}</td>
+        <td>${new Date(log.modified_at).toLocaleString()}</td>
+      </tr>
+    `).join("");
+  }
+
+  function downloadCSV() {
+    if (currentRows.length === 0) {
+      alert("No audit log entries to download.");
+      return;
+    }
+
+    const headers = ["User Name", "User Role", "User ID", "Action", "IP Address", "User Created", "Login Time", "Modified At"];
+    const escapeCsv = (val) => `"${String(val ?? "").replace(/"/g, '""')}"`;
+
+    const csvRows = [
+      headers.join(","),
+      ...currentRows.map(log => [
+        log.user_name,
+        log.user_role,
+        log.user_id,
+        log.modified_page_or_field,
+        log.ip_address ?? "",
+        new Date(log.user_created_date_time).toLocaleString(),
+        new Date(log.user_login_date_time).toLocaleString(),
+        new Date(log.modified_at).toLocaleString(),
+      ].map(escapeCsv).join(","))
+    ];
+
+    const csvContent = csvRows.join("\n");
+    const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `audit-logs-${new Date().toISOString().slice(0, 10)}.csv`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  }
+
+  ["searchBox", "roleFilter", "sortOrder"].forEach(id => {
+    document.getElementById(id).addEventListener("input", render);
+  });
+
+  if (session) {
+    renderSidebar("audit-logs.html", session.user.role_name);
+    loadLogs();
+  }
+</script>
+
+</body>
+</html>

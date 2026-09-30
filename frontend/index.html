@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Dashboard - Transaction Monitor</title>
+<link href="https://cdnjs.cloudflare.com/ajax/libs/bootstrap/5.3.3/css/bootstrap.min.css" rel="stylesheet">
+<link href="https://cdnjs.cloudflare.com/ajax/libs/bootstrap-icons/1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<script src="auth.js"></script>
+<style>
+  body { background: #f7f7f8; font-family: -apple-system, Segoe UI, Roboto, sans-serif; margin: 0; }
+  .app-shell { display: flex; min-height: 100vh; }
+  .sidebar { width: 240px; background: #fff; border-right: 1px solid #e5e7eb; padding: 1.5rem 1rem; flex-shrink: 0; display: flex; flex-direction: column; }
+  .sidebar h4 { font-weight: 700; margin-bottom: 2rem; }
+  .nav-link { color: #374151; border-radius: 8px; padding: 0.6rem 0.8rem; margin-bottom: 0.3rem; display: flex; align-items: center; gap: 0.6rem; font-size: 0.95rem; }
+  .nav-link:hover { background: #f3f4f6; }
+  .nav-link.active { background: #111827; color: #fff; }
+  .main-content { flex: 1; padding: 2rem; max-width: 1300px; }
+  .stat-card { background: #fff; border-radius: 10px; padding: 1.2rem 1.5rem; box-shadow: 0 1px 3px rgba(0,0,0,0.08); height: 100%; }
+  .stat-label { color: #6b7280; font-size: 0.85rem; }
+  .stat-value { font-size: 1.8rem; font-weight: 700; }
+  .chart-card { background: #fff; border-radius: 10px; padding: 1.5rem; box-shadow: 0 1px 3px rgba(0,0,0,0.08); }
+  #status { color: #6b7280; }
+</style>
+</head>
+<body>
+
+<div class="app-shell">
+  <div class="sidebar">
+    <h4>Transaction<br>Monitor</h4>
+    <div id="sidebarNav"></div>
+    <a href="#" onclick="logout()" class="nav-link mt-auto"><i class="bi bi-box-arrow-right"></i> Logout</a>
+  </div>
+
+  <div class="main-content">
+    <h2 class="fw-bold mb-1">Dashboard</h2>
+    <p class="text-muted mb-4">Real-time transaction monitoring and fraud detection</p>
+
+    <div id="status">Loading...</div>
+
+    <div id="dashboardContent" style="display:none;">
+      <div class="row g-3 mb-4">
+        <div class="col-md-3">
+          <div class="stat-card">
+            <div class="stat-label">Total Transactions</div>
+            <div class="stat-value" id="statTotal">—</div>
+          </div>
+        </div>
+        <div class="col-md-3">
+          <div class="stat-card">
+            <div class="stat-label">Flagged</div>
+            <div class="stat-value text-warning" id="statFlagged">—</div>
+          </div>
+        </div>
+        <div class="col-md-3">
+          <div class="stat-card">
+            <div class="stat-label">Rejected</div>
+            <div class="stat-value text-danger" id="statRejected">—</div>
+          </div>
+        </div>
+        <div class="col-md-3">
+          <div class="stat-card">
+            <div class="stat-label">Avg Risk Score</div>
+            <div class="stat-value" id="statAvgRisk">—</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="row g-3">
+        <div class="col-md-7">
+          <div class="chart-card">
+            <h6 class="fw-bold mb-3">Transaction Volume (by day)</h6>
+            <canvas id="trendChart" height="220"></canvas>
+          </div>
+        </div>
+        <div class="col-md-5">
+          <div class="chart-card">
+            <h6 class="fw-bold mb-3">Channel Distribution</h6>
+            <canvas id="channelChart" height="220"></canvas>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+  const session = requireAuth("index.html");
+
+  async function loadDashboard() {
+    const statusEl = document.getElementById("status");
+    try {
+      const res = await apiFetch(`${API_BASE}/api/transactions?limit=200`);
+      if (!res.ok) throw new Error(`API returned ${res.status}`);
+      const txns = await res.json();
+
+      statusEl.style.display = "none";
+      document.getElementById("dashboardContent").style.display = "block";
+
+      renderStats(txns);
+      renderTrendChart(txns);
+      renderChannelChart(txns);
+    } catch (err) {
+      statusEl.textContent = `Could not load dashboard data: ${err.message}. Is the API running at ${API_BASE}?`;
+    }
+  }
+
+  function renderStats(txns) {
+    const total = txns.length;
+    const flagged = txns.filter(t => t.status === "Flagged").length;
+    const rejected = txns.filter(t => t.status === "Rejected").length;
+    const scored = txns.filter(t => t.risk_score !== null && t.risk_score !== undefined);
+    const avgRisk = scored.length
+      ? (scored.reduce((sum, t) => sum + t.risk_score, 0) / scored.length).toFixed(1)
+      : "—";
+
+    document.getElementById("statTotal").textContent = total;
+    document.getElementById("statFlagged").textContent = flagged;
+    document.getElementById("statRejected").textContent = rejected;
+    document.getElementById("statAvgRisk").textContent = avgRisk;
+  }
+
+  function renderTrendChart(txns) {
+    const countsByDay = {};
+    txns.forEach(t => {
+      const day = new Date(t.transaction_date_time).toLocaleDateString();
+      countsByDay[day] = (countsByDay[day] || 0) + 1;
+    });
+    const labels = Object.keys(countsByDay).sort((a, b) => new Date(a) - new Date(b));
+    const data = labels.map(l => countsByDay[l]);
+
+    new Chart(document.getElementById("trendChart"), {
+      type: "line",
+      data: {
+        labels,
+        datasets: [{
+          label: "Transactions",
+          data,
+          borderColor: "#f97316",
+          backgroundColor: "rgba(249,115,22,0.15)",
+          fill: true,
+          tension: 0.3,
+        }]
+      },
+      options: { plugins: { legend: { display: false } } }
+    });
+  }
+
+  function renderChannelChart(txns) {
+    const countsByChannel = {};
+    txns.forEach(t => {
+      countsByChannel[t.channel] = (countsByChannel[t.channel] || 0) + 1;
+    });
+
+    new Chart(document.getElementById("channelChart"), {
+      type: "pie",
+      data: {
+        labels: Object.keys(countsByChannel),
+        datasets: [{
+          data: Object.values(countsByChannel),
+          backgroundColor: ["#f97316", "#14b8a6", "#3b82f6", "#eab308", "#a855f7"],
+        }]
+      }
+    });
+  }
+
+  if (session) {
+    renderSidebar("index.html", session.user.role_name);
+    loadDashboard();
+  }
+</script>
+
+</body>
+</html>
