@@ -2,8 +2,9 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>Login - Transaction Monitor</title>
+<title>Login - FraudLens</title>
 <link href="https://cdnjs.cloudflare.com/ajax/libs/bootstrap/5.3.3/css/bootstrap.min.css" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <style>
   body {
     background: #f7f7f8;
@@ -19,15 +20,17 @@
     padding: 2.5rem;
     box-shadow: 0 1px 3px rgba(0,0,0,0.1);
     width: 100%;
-    max-width: 380px;
+    max-width: 400px;
   }
   #errorMsg { display: none; }
+  #qrcode { display: flex; justify-content: center; margin: 1rem 0; }
+  code { background: #f3f4f6; padding: 0.2rem 0.4rem; border-radius: 4px; }
 </style>
 </head>
 <body>
 
 <div class="login-card">
-  <h4 class="fw-bold mb-1">Transaction Monitor</h4>
+  <h4 class="fw-bold mb-1">FraudLens</h4>
   <p class="text-muted mb-4" id="subtitle">Sign in to continue</p>
 
   <div class="alert alert-danger" id="errorMsg"></div>
@@ -45,24 +48,50 @@
     <button type="submit" class="btn btn-dark w-100">Sign In</button>
   </form>
 
-  <!-- Step 2: MFA code (hidden until needed) -->
+  <!-- Step 2a: MFA code (already enrolled) -->
   <form id="mfaForm" style="display:none;">
     <div class="mb-3">
       <label class="form-label small">6-digit code from your authenticator app</label>
-      <input type="text" class="form-control" id="mfaCode" inputmode="numeric" maxlength="6" required autofocus>
+      <input type="text" class="form-control text-center" id="mfaCode" inputmode="numeric" maxlength="6" required autofocus>
     </div>
     <button type="submit" class="btn btn-dark w-100">Verify</button>
   </form>
+
+  <!-- Step 2b: mandatory first-time MFA enrollment (not enrolled yet) -->
+  <div id="enrollSection" style="display:none;">
+    <p class="small">MFA is required for every account. Scan this QR code with Google Authenticator, Microsoft Authenticator, or a similar app, then enter the code it shows.</p>
+    <div id="qrcode"></div>
+    <p class="small text-muted text-center">Can't scan? Enter manually: <br><code id="secretText"></code></p>
+    <form id="enrollForm">
+      <div class="mb-3">
+        <label class="form-label small">6-digit code</label>
+        <input type="text" class="form-control text-center" id="enrollCode" inputmode="numeric" maxlength="6" required>
+      </div>
+      <button type="submit" class="btn btn-dark w-100">Verify & Complete Login</button>
+    </form>
+  </div>
 </div>
 
 <script>
   const API_BASE = "http://127.0.0.1:8000";
   let pendingToken = null;
+  let setupToken = null;
+
+  function showError(msg) {
+    const errorMsg = document.getElementById("errorMsg");
+    errorMsg.textContent = msg;
+    errorMsg.style.display = "block";
+  }
+
+  function completeLogin(tokenResponse) {
+    sessionStorage.setItem("session", JSON.stringify(tokenResponse));
+    sessionStorage.setItem("lastActivity", Date.now().toString());
+    window.location.href = "index.html";
+  }
 
   document.getElementById("loginForm").addEventListener("submit", async (e) => {
     e.preventDefault();
-    const errorMsg = document.getElementById("errorMsg");
-    errorMsg.style.display = "none";
+    document.getElementById("errorMsg").style.display = "none";
 
     const username = document.getElementById("username").value;
     const password = document.getElementById("password").value;
@@ -73,12 +102,10 @@
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ username, password }),
       });
-
       const data = await res.json();
 
       if (!res.ok) {
-        errorMsg.textContent = data.detail || "Login failed.";
-        errorMsg.style.display = "block";
+        showError(data.detail || "Login failed.");
         return;
       }
 
@@ -90,19 +117,26 @@
         return;
       }
 
-      sessionStorage.setItem("session", JSON.stringify(data));
-      window.location.href = "index.html";
+      if (data.mfa_setup_required) {
+        setupToken = data.setup_token;
+        document.getElementById("loginForm").style.display = "none";
+        document.getElementById("enrollSection").style.display = "block";
+        document.getElementById("subtitle").textContent = "Set up MFA to finish signing in";
+        await startEnrollment();
+        return;
+      }
+
+      // Shouldn't normally happen (login() always requires MFA, enrolled
+      // or not) - but handle it defensively just in case.
+      completeLogin(data);
     } catch (err) {
-      errorMsg.textContent = `Could not reach the API: ${err.message}`;
-      errorMsg.style.display = "block";
+      showError(`Could not reach the API: ${err.message}`);
     }
   });
 
   document.getElementById("mfaForm").addEventListener("submit", async (e) => {
     e.preventDefault();
-    const errorMsg = document.getElementById("errorMsg");
-    errorMsg.style.display = "none";
-
+    document.getElementById("errorMsg").style.display = "none";
     const code = document.getElementById("mfaCode").value;
 
     try {
@@ -111,20 +145,61 @@
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ pending_token: pendingToken, code }),
       });
-
       const data = await res.json();
 
       if (!res.ok) {
-        errorMsg.textContent = data.detail || "Incorrect code.";
-        errorMsg.style.display = "block";
+        showError(data.detail || "Incorrect code.");
+        return;
+      }
+      completeLogin(data);
+    } catch (err) {
+      showError(`Could not reach the API: ${err.message}`);
+    }
+  });
+
+  async function startEnrollment() {
+    try {
+      const res = await fetch(`${API_BASE}/api/auth/mfa/setup`, {
+        method: "POST",
+        headers: { "Authorization": `Bearer ${setupToken}` },
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        showError(data.detail || "Could not start MFA setup.");
         return;
       }
 
-      sessionStorage.setItem("session", JSON.stringify(data));
-      window.location.href = "index.html";
+      document.getElementById("secretText").textContent = data.secret;
+      new QRCode(document.getElementById("qrcode"), {
+        text: data.provisioning_uri,
+        width: 180,
+        height: 180,
+      });
     } catch (err) {
-      errorMsg.textContent = `Could not reach the API: ${err.message}`;
-      errorMsg.style.display = "block";
+      showError(`Could not reach the API: ${err.message}`);
+    }
+  }
+
+  document.getElementById("enrollForm").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    document.getElementById("errorMsg").style.display = "none";
+    const code = document.getElementById("enrollCode").value;
+
+    try {
+      const res = await fetch(`${API_BASE}/api/auth/mfa/verify`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Authorization": `Bearer ${setupToken}` },
+        body: JSON.stringify({ code }),
+      });
+      const data = await res.json();
+
+      if (!res.ok) {
+        showError(data.detail || "Incorrect code.");
+        return;
+      }
+      completeLogin(data); // verify endpoint returns a full TokenResponse for setup-pending enrollment
+    } catch (err) {
+      showError(`Could not reach the API: ${err.message}`);
     }
   });
 </script>

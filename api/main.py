@@ -28,7 +28,8 @@ from rules import evaluate_rules
 from ml_scoring import get_ml_score
 from auth import (
     hash_password, verify_password, create_access_token, decode_access_token,
-    create_mfa_pending_token, generate_mfa_secret, get_mfa_provisioning_uri, verify_totp_code,
+    create_mfa_pending_token, create_setup_pending_token,
+    generate_mfa_secret, get_mfa_provisioning_uri, verify_totp_code,
 )
 
 app = FastAPI(title="CC Transaction Monitoring API")
@@ -92,6 +93,25 @@ def require_role(*allowed_roles: str):
             raise HTTPException(status_code=403, detail="You don't have permission to do this")
         return user
     return checker
+
+
+def get_user_for_mfa_actions(credentials: HTTPAuthorizationCredentials = Depends(security)) -> dict:
+    """
+    Accepts EITHER a full logged-in session OR a short-lived
+    setup-pending token (issued by /login when MFA enrollment is
+    mandatory and hasn't happened yet). Both contain user_id, which is
+    all the MFA setup/verify endpoints actually need - this lets a
+    brand-new user complete mandatory enrollment before ever having
+    full access, while also letting an already-logged-in user
+    voluntarily re-enroll later using their normal session.
+    """
+    try:
+        payload = decode_access_token(credentials.credentials)
+    except JWTError:
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
+    if "user_id" not in payload:
+        raise HTTPException(status_code=401, detail="Invalid token")
+    return payload
 
 
 def write_audit_log(user: dict, request: Request, modified_page_or_field: str):
@@ -232,6 +252,10 @@ def register(user: UserRegister, current_user: dict | None = Depends(get_current
     )
 
 
+MAX_FAILED_LOGIN_ATTEMPTS = 5
+LOCKOUT_DURATION_MINUTES = 30
+
+
 @app.post("/api/auth/login")
 def login(credentials: UserLogin):
     """
@@ -241,6 +265,11 @@ def login(credentials: UserLogin):
     call POST /api/auth/login/mfa with that token + a TOTP code to
     actually get logged in. If MFA isn't enabled, behaves as before.
 
+    PCI DSS 8.3.4: locks the account for LOCKOUT_DURATION_MINUTES after
+    MAX_FAILED_LOGIN_ATTEMPTS consecutive wrong passwords, so a brute
+    force password guesser hits a hard wall regardless of RBAC/session
+    protections that only apply AFTER a successful login.
+
     (No single response_model here since the two possible response
     shapes differ - both are still valid, documented JSON.)
     """
@@ -248,7 +277,8 @@ def login(credentials: UserLogin):
         cursor = conn.cursor()
         cursor.execute(
             """SELECT u.UserId, u.UserName, u.PasswordHash, u.IsActive,
-                      u.CreatedDateTime, u.LastLoginAt, u.MfaEnabled, r.RoleName
+                      u.CreatedDateTime, u.LastLoginAt, u.MfaEnabled, r.RoleName,
+                      u.FailedLoginAttempts, u.LockedUntil
                FROM dbo.tblUsers u
                JOIN dbo.tblRoles r ON r.RoleId = u.RoleId
                WHERE u.UserName = ?""",
@@ -256,10 +286,51 @@ def login(credentials: UserLogin):
         )
         row = cursor.fetchone()
 
-        if row is None or not verify_password(credentials.password, row.PasswordHash):
-            raise HTTPException(status_code=401, detail="Incorrect username or password")
+        # Same generic error whether the username doesn't exist or the
+        # account is locked/wrong password - don't reveal which case it is.
+        generic_error = HTTPException(status_code=401, detail="Incorrect username or password")
+
+        if row is None:
+            raise generic_error
+
+        if row.LockedUntil and row.LockedUntil > datetime.utcnow():
+            minutes_left = int((row.LockedUntil - datetime.utcnow()).total_seconds() / 60) + 1
+            raise HTTPException(
+                status_code=403,
+                detail=f"Account locked due to repeated failed attempts. Try again in {minutes_left} minute(s).",
+            )
+
+        if not verify_password(credentials.password, row.PasswordHash):
+            new_attempts = row.FailedLoginAttempts + 1
+            if new_attempts >= MAX_FAILED_LOGIN_ATTEMPTS:
+                cursor.execute(
+                    """UPDATE dbo.tblUsers
+                       SET FailedLoginAttempts = 0,
+                           LockedUntil = DATEADD(MINUTE, ?, SYSUTCDATETIME())
+                       WHERE UserId = ?""",
+                    LOCKOUT_DURATION_MINUTES, row.UserId,
+                )
+                conn.commit()
+                raise HTTPException(
+                    status_code=403,
+                    detail=f"Account locked due to repeated failed attempts. Try again in {LOCKOUT_DURATION_MINUTES} minutes.",
+                )
+            cursor.execute(
+                "UPDATE dbo.tblUsers SET FailedLoginAttempts = ? WHERE UserId = ?",
+                new_attempts, row.UserId,
+            )
+            conn.commit()
+            raise generic_error
+
         if not row.IsActive:
             raise HTTPException(status_code=403, detail="This account is deactivated")
+
+        # Correct password - reset the failed-attempt counter.
+        cursor.execute(
+            "UPDATE dbo.tblUsers SET FailedLoginAttempts = 0, LockedUntil = NULL WHERE UserId = ?",
+            row.UserId,
+        )
+        conn.commit()
 
         if row.MfaEnabled:
             # Don't update LastLoginAt or issue a real token yet - that
@@ -267,26 +338,12 @@ def login(credentials: UserLogin):
             pending_token = create_mfa_pending_token(row.UserId)
             return {"mfa_required": True, "pending_token": pending_token}
 
-        cursor.execute(
-            "UPDATE dbo.tblUsers SET LastLoginAt = SYSUTCDATETIME() WHERE UserId = ?",
-            row.UserId,
-        )
-        conn.commit()
-
-    token = create_access_token({
-        "user_id": row.UserId, "username": row.UserName, "role_name": row.RoleName,
-        "created_date_time": row.CreatedDateTime.isoformat(),
-        "login_date_time": datetime.utcnow().isoformat(),
-    })
-
-    return TokenResponse(
-        access_token=token,
-        user=UserOut(
-            user_id=row.UserId, username=row.UserName, role_name=row.RoleName,
-            is_active=bool(row.IsActive), created_date_time=row.CreatedDateTime,
-            last_login_at=row.LastLoginAt,
-        ),
-    )
+        # MFA is MANDATORY: if not enrolled yet, no real access is granted
+        # at all - only a limited token that can call the MFA setup/verify
+        # endpoints, nothing else. Enrollment must complete before login
+        # succeeds for the first time.
+        setup_token = create_setup_pending_token(row.UserId)
+        return {"mfa_setup_required": True, "setup_token": setup_token}
 
 
 @app.post("/api/auth/login/mfa", response_model=TokenResponse)
@@ -341,33 +398,56 @@ def login_mfa(payload: MfaLoginRequest):
 
 
 @app.post("/api/auth/mfa/setup", response_model=MfaSetupResponse)
-def setup_mfa(current_user: dict = Depends(get_current_user)):
+def setup_mfa(current_user: dict = Depends(get_user_for_mfa_actions)):
     """
-    Generates a new TOTP secret for the logged-in user and stores it
-    (MfaEnabled stays False until they verify a code - see /mfa/verify).
-    Calling this again before verifying overwrites the pending secret,
-    which is fine (e.g. they want to rescan the QR code).
+    Generates a new TOTP secret and stores it (MfaEnabled stays False
+    until verified - see /mfa/verify). Works both for a brand-new user
+    completing MANDATORY first-time enrollment (setup-pending token,
+    no full session yet) and an existing user voluntarily re-enrolling
+    (normal full session). Calling this again before verifying
+    overwrites the pending secret, which is fine (e.g. rescanning).
     """
+    user_id = current_user["user_id"]
     secret = generate_mfa_secret()
 
     with get_connection() as conn:
         cursor = conn.cursor()
         cursor.execute(
             "UPDATE dbo.tblUsers SET MfaSecret = ?, MfaEnabled = 0 WHERE UserId = ?",
-            secret, current_user["user_id"],
+            secret, user_id,
         )
         conn.commit()
 
-    uri = get_mfa_provisioning_uri(secret, current_user["username"])
+        cursor.execute("SELECT UserName FROM dbo.tblUsers WHERE UserId = ?", user_id)
+        username = cursor.fetchone()[0]
+
+    uri = get_mfa_provisioning_uri(secret, username)
     return MfaSetupResponse(secret=secret, provisioning_uri=uri)
 
 
 @app.post("/api/auth/mfa/verify")
-def verify_mfa_setup(payload: MfaVerifyRequest, current_user: dict = Depends(get_current_user)):
-    """Confirms enrollment by checking one real code from the authenticator app, then flips MfaEnabled on."""
+def verify_mfa_setup(payload: MfaVerifyRequest, current_user: dict = Depends(get_user_for_mfa_actions)):
+    """
+    Confirms enrollment by checking one real code from the
+    authenticator app, then flips MfaEnabled on.
+
+    If this came from a setup-pending token (mandatory first-time
+    enrollment, no full session yet), a full access token is issued
+    immediately - completing enrollment IS the login, so the user
+    doesn't have to separately log in again right after. If it came
+    from an already-logged-in user re-enrolling voluntarily, just
+    confirms success without changing their existing session.
+    """
+    user_id = current_user["user_id"]
+
     with get_connection() as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT MfaSecret FROM dbo.tblUsers WHERE UserId = ?", current_user["user_id"])
+        cursor.execute(
+            """SELECT u.MfaSecret, u.UserName, u.CreatedDateTime, r.RoleName
+               FROM dbo.tblUsers u JOIN dbo.tblRoles r ON r.RoleId = u.RoleId
+               WHERE u.UserId = ?""",
+            user_id,
+        )
         row = cursor.fetchone()
 
         if row is None or not row.MfaSecret:
@@ -375,8 +455,25 @@ def verify_mfa_setup(payload: MfaVerifyRequest, current_user: dict = Depends(get
         if not verify_totp_code(row.MfaSecret, payload.code):
             raise HTTPException(status_code=401, detail="Incorrect code - check your authenticator app and try again")
 
-        cursor.execute("UPDATE dbo.tblUsers SET MfaEnabled = 1 WHERE UserId = ?", current_user["user_id"])
+        cursor.execute("UPDATE dbo.tblUsers SET MfaEnabled = 1 WHERE UserId = ?", user_id)
+
+        if current_user.get("setup_pending"):
+            cursor.execute("UPDATE dbo.tblUsers SET LastLoginAt = SYSUTCDATETIME() WHERE UserId = ?", user_id)
         conn.commit()
+
+    if current_user.get("setup_pending"):
+        token = create_access_token({
+            "user_id": user_id, "username": row.UserName, "role_name": row.RoleName,
+            "created_date_time": row.CreatedDateTime.isoformat(),
+            "login_date_time": datetime.utcnow().isoformat(),
+        })
+        return TokenResponse(
+            access_token=token,
+            user=UserOut(
+                user_id=user_id, username=row.UserName, role_name=row.RoleName,
+                is_active=True, created_date_time=row.CreatedDateTime, last_login_at=None,
+            ),
+        )
 
     return {"mfa_enabled": True}
 

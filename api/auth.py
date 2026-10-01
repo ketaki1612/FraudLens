@@ -51,6 +51,21 @@ def create_mfa_pending_token(user_id: int) -> str:
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
 
+def create_setup_pending_token(user_id: int) -> str:
+    """
+    Like create_mfa_pending_token, but for a user who hasn't enrolled
+    in MFA yet at all. This token ONLY allows calling the MFA
+    setup/verify endpoints - nothing else - until enrollment completes.
+    MFA is mandatory, so this is issued instead of a real access token.
+    """
+    to_encode = {
+        "user_id": user_id,
+        "setup_pending": True,
+        "exp": datetime.utcnow() + timedelta(minutes=10),
+    }
+    return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+
+
 def decode_access_token(token: str) -> dict:
     """Raises jose.JWTError if the token is invalid or expired."""
     return jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
